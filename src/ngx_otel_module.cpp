@@ -8,7 +8,7 @@
 
 #include <fstream>
 
-extern ngx_module_t gHttpModule;
+extern ngx_module_t ngx_otel_module;
 
 namespace {
 
@@ -174,18 +174,18 @@ bool iremovePrefix(ngx_str_t* str, StrView p)
 MainConf* getMainConf(ngx_conf_t* cf)
 {
     return static_cast<MainConf*>(
-        (MainConfBase*)ngx_http_conf_get_module_main_conf(cf, gHttpModule));
+        (MainConfBase*)ngx_http_conf_get_module_main_conf(cf, ngx_otel_module));
 }
 
 MainConf* getMainConf(ngx_cycle_t* cycle)
 {
     return static_cast<MainConf*>(
-        (MainConfBase*)ngx_http_cycle_get_module_main_conf(cycle, gHttpModule));
+        (MainConfBase*)ngx_http_cycle_get_module_main_conf(cycle, ngx_otel_module));
 }
 
 LocationConf* getLocationConf(ngx_http_request_t* r)
 {
-    return (LocationConf*)ngx_http_get_module_loc_conf(r, gHttpModule);
+    return (LocationConf*)ngx_http_get_module_loc_conf(r, ngx_otel_module);
 }
 
 void cleanupOtelCtx(void* data)
@@ -194,7 +194,7 @@ void cleanupOtelCtx(void* data)
 
 OtelCtx* getOtelCtx(ngx_http_request_t* r)
 {
-    auto ctx = (OtelCtx*)ngx_http_get_module_ctx(r, gHttpModule);
+    auto ctx = (OtelCtx*)ngx_http_get_module_ctx(r, ngx_otel_module);
 
     // restore module context if it was reset by e.g. internal redirect
     if (ctx == NULL && (r->internal || r->filter_finalize)) {
@@ -202,7 +202,7 @@ OtelCtx* getOtelCtx(ngx_http_request_t* r)
         for (auto cln = r->pool->cleanup; cln; cln = cln->next) {
             if (cln->handler == cleanupOtelCtx) {
                 ctx = (OtelCtx*)cln->data;
-                ngx_http_set_ctx(r, ctx, gHttpModule);
+                ngx_http_set_ctx(r, ctx, ngx_otel_module);
                 break;
             }
         }
@@ -223,7 +223,7 @@ OtelCtx* createOtelCtx(ngx_http_request_t* r)
     storage->handler = cleanupOtelCtx;
 
     auto ctx = new (storage->data) OtelCtx{};
-    ngx_http_set_ctx(r, ctx, gHttpModule);
+    ngx_http_set_ctx(r, ctx, ngx_otel_module);
 
     return ctx;
 }
@@ -518,7 +518,11 @@ ngx_int_t onRequestEnd(ngx_http_request_t* r)
     try {
         BatchExporter::SpanInfo info{
             getSpanName(r), ctx->current, ctx->parent.spanId,
+#if defined freenginx
+            (toNanoSec(now->sec, now->msec) - ((ngx_current_msec - r->start_time) * 1000000)),
+#else
             toNanoSec(r->start_sec, r->start_msec),
+#endif
             toNanoSec(now->sec, now->msec)};
 
         bool ok = gExporter->add(info, [r](BatchExporter::Span& span) {
@@ -972,7 +976,7 @@ char* mergeLocationConf(ngx_conf_t* cf, void* parent, void* child)
     return NGX_CONF_OK;
 }
 
-ngx_http_module_t gHttpModuleCtx = {
+ngx_http_module_t ngx_otel_moduleCtx = {
     addVariables,                       /* preconfiguration */
     initModule,                         /* postconfiguration */
 
@@ -988,9 +992,9 @@ ngx_http_module_t gHttpModuleCtx = {
 
 }
 
-ngx_module_t gHttpModule = {
+ngx_module_t ngx_otel_module = {
     NGX_MODULE_V1,
-    &gHttpModuleCtx,                    /* module context */
+    &ngx_otel_moduleCtx,                /* module context */
     gCommands,                          /* module directives */
     NGX_HTTP_MODULE,                    /* module type */
     NULL,                               /* init master */
